@@ -7,6 +7,7 @@ import (
 	errs "errors"
 	"fmt"
 	"github.com/boltdb/bolt"
+	"github.com/dmitrorezn/dist-tx-pool-raft/internal/domain"
 	"github.com/hashicorp/go-uuid"
 	"github.com/pkg/errors"
 	"io"
@@ -18,14 +19,19 @@ type DiskStore struct {
 	db         *bolt.DB
 	bucketName []byte
 }
+
 type DiskStoreCfg struct {
-	DiskStoreDir string `env:"DISK_STORE_DIR"`
+	DiskStoreDir string `env:"DISK_STORE_DIR" envDefault:"persist"`
 }
 
 func NewDB(cfg DiskStoreCfg, bucketName string) (ds *DiskStore, err error) {
 	ds = &DiskStore{
 		bucketName: []byte(bucketName),
 	}
+	if err = os.MkdirAll(cfg.DiskStoreDir, stableStorePerm); err != nil {
+		return nil, err
+	}
+	fmt.Println("MkdirAll")
 
 	if ds.db, err = bolt.Open(
 		filepath.Join(cfg.DiskStoreDir, "store"),
@@ -34,6 +40,7 @@ func NewDB(cfg DiskStoreCfg, bucketName string) (ds *DiskStore, err error) {
 	); err != nil {
 		return nil, err
 	}
+	fmt.Println("bolt.Open")
 	if err = ds.createBucket(bucketName); err != nil {
 		return nil, err
 	}
@@ -91,51 +98,68 @@ const (
 	separatorByte = 0x1
 )
 
-func (ds *DiskStore) Insert(ctx context.Context, transaction ...*Transaction) (id string, err error) {
+func (ds *DiskStore) Insert(ctx context.Context, transaction ...*domain.Transaction) (err error) {
+	var id string
 	if id, err = uuid.GenerateUUID(); err != nil {
-		return "", err
+		return err
 	}
-
 	var buf bytes.Buffer
 	for _, tx := range transaction {
 		if err = errs.Join(
 			buf.WriteByte(separatorByte),
 			gob.NewEncoder(&buf).Encode(tx),
 		); err != nil {
-			return "", errors.Wrap(err, "Encode")
+			return errors.Wrap(err, "Encode")
 		}
 	}
-	tx, closer, err := ds.Write()
-	if err != nil {
-		return "", errors.Wrap(err, "Write")
-	}
-	defer func() {
-		err = closer(err)
-	}()
-
-	if err = tx.Bucket(ds.bucketName).Put([]byte(id), buf.Bytes()); err != nil {
-		return "", errors.Wrap(err, "put")
+	if err = ds.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(ds.bucketName).Put([]byte(id), buf.Bytes())
+	}); err != nil {
+		return errors.Wrap(err, "Update")
 	}
 
-	return id, err
+	return err
 }
 
-func (ds *DiskStore) List(ctx context.Context) ([]*Transaction, error) {
-	tx, closer, err := ds.Read()
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		err = closer(err)
-	}()
-	var transactions []*Transaction
-	if err = tx.Bucket(ds.bucketName).ForEach(func(id, v []byte) (err error) {
+//func (ds *DiskStore) GetLast(ctx context.Context) (*Transaction, error) {
+//	var transaction *Transaction
+//
+//	handler := func(tx *bolt.Tx) error {
+//		return tx.Bucket(ds.bucketName).ForEach(func(id, v []byte) (err error) {
+//			r := bytes.NewBuffer(v)
+//			decoder := gob.NewDecoder(r)
+//			var separator byte
+//			for {
+//				var transaction = Transaction{
+//					ID: id,
+//				}
+//				if separator, err = r.ReadByte(); err == io.EOF {
+//					return nil
+//				}
+//				if separator != separatorByte {
+//					return fmt.Errorf("wrang leading byte")
+//				}
+//				if err = decoder.Decode(&transaction); err != nil && err != io.EOF {
+//					return errors.Wrap(err, "Decode")
+//				}
+//				transactions = append(transactions, &transaction)
+//			}
+//		})
+//	}
+//
+//	return transactions, ds.db.View(handler)
+//}
+
+func (ds *DiskStore) listTx(tx *bolt.Tx) ([]*domain.Transaction, error) {
+	var transactions []*domain.Transaction
+
+	return transactions, tx.Bucket(ds.bucketName).ForEach(func(id, v []byte) (err error) {
 		r := bytes.NewBuffer(v)
 		decoder := gob.NewDecoder(r)
 		var separator byte
 		for {
-			var transaction = Transaction{
-				ID: id,
+			var transaction = domain.Transaction{
+				ID: string(id),
 			}
 			if separator, err = r.ReadByte(); err == io.EOF {
 				return nil
@@ -148,11 +172,16 @@ func (ds *DiskStore) List(ctx context.Context) ([]*Transaction, error) {
 			}
 			transactions = append(transactions, &transaction)
 		}
-	}); err != nil {
-		return nil, err
-	}
+	})
+}
+func (ds *DiskStore) List(ctx context.Context) ([]*domain.Transaction, error) {
+	var transactions []*domain.Transaction
 
-	return transactions, nil
+	return transactions, ds.db.View(func(tx *bolt.Tx) (err error) {
+		transactions, err = ds.listTx(tx)
+
+		return err
+	})
 }
 
 func (ds *DiskStore) Flush(ctx context.Context) error {

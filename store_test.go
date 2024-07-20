@@ -2,10 +2,14 @@ package main
 
 import (
 	"context"
-	"github.com/stretchr/testify/assert"
+
 	"os"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+
+	"github.com/dmitrorezn/dist-tx-pool-raft/internal/domain"
 )
 
 func TestDiskStore_Insert(t *testing.T) {
@@ -18,16 +22,16 @@ func TestDiskStore_Insert(t *testing.T) {
 
 	ctx := context.Background()
 	t.Run("insert", func(t *testing.T) {
-		tx := &Transaction{
+		tx := &domain.Transaction{
 			Index:     1,
+			ID:        "test",
 			Timestamp: time.Now().UnixNano(),
 			Data:      []byte("test"),
 			Action:    "tx",
 			Encoding:  1,
 		}
-		id, err := store.Insert(ctx, tx)
+		err := store.Insert(ctx, tx)
 		assert.NoError(t, err)
-		tx.ID = []byte(id)
 
 		txx, err := store.List(ctx)
 		assert.NoError(t, err)
