@@ -31,7 +31,6 @@ func NewDB(cfg DiskStoreCfg, bucketName string) (ds *DiskStore, err error) {
 	if err = os.MkdirAll(cfg.DiskStoreDir, stableStorePerm); err != nil {
 		return nil, err
 	}
-	fmt.Println("MkdirAll")
 
 	if ds.db, err = bolt.Open(
 		filepath.Join(cfg.DiskStoreDir, "store"),
@@ -40,7 +39,6 @@ func NewDB(cfg DiskStoreCfg, bucketName string) (ds *DiskStore, err error) {
 	); err != nil {
 		return nil, err
 	}
-	fmt.Println("bolt.Open")
 	if err = ds.createBucket(bucketName); err != nil {
 		return nil, err
 	}
@@ -150,26 +148,29 @@ func (ds *DiskStore) Insert(ctx context.Context, transaction ...*domain.Transact
 //	return transactions, ds.db.View(handler)
 //}
 
+var _ = func() {
+	gob.Register(domain.Transaction{})
+}
+
 func (ds *DiskStore) listTx(tx *bolt.Tx) ([]*domain.Transaction, error) {
 	var transactions []*domain.Transaction
 
 	return transactions, tx.Bucket(ds.bucketName).ForEach(func(id, v []byte) (err error) {
 		r := bytes.NewBuffer(v)
-		decoder := gob.NewDecoder(r)
 		var separator byte
+
 		for {
-			var transaction = domain.Transaction{
-				ID: string(id),
-			}
+			var transaction domain.Transaction
 			if separator, err = r.ReadByte(); err == io.EOF {
 				return nil
 			}
 			if separator != separatorByte {
 				return fmt.Errorf("wrang leading byte")
 			}
-			if err = decoder.Decode(&transaction); err != nil && err != io.EOF {
+			if err = gob.NewDecoder(r).Decode(&transaction); err != nil && err != io.EOF {
 				return errors.Wrap(err, "Decode")
 			}
+			transaction.ID = string(id)
 			transactions = append(transactions, &transaction)
 		}
 	})

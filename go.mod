@@ -17,6 +17,7 @@ require (
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/dmitrorezn/channel v0.0.0-20240720063829-b65101541bc3 // indirect
 	github.com/fatih/color v1.13.0 // indirect
+	github.com/google/gofuzz v1.2.0 // indirect
 	github.com/hashicorp/go-hclog v1.6.2 // indirect
 	github.com/hashicorp/go-immutable-radix v1.0.0 // indirect
 	github.com/hashicorp/go-msgpack v0.5.5 // indirect

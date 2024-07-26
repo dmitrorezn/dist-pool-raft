@@ -26,7 +26,7 @@ func TestDiskStore_Insert(t *testing.T) {
 			Index:     1,
 			ID:        "test",
 			Timestamp: time.Now().UnixNano(),
-			Data:      []byte("test"),
+			Data:      "test",
 			Action:    "tx",
 			Encoding:  1,
 		}

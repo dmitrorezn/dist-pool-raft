@@ -2,27 +2,28 @@ package main
 
 import (
 	"context"
+	errs "errors"
 	"fmt"
 	raftboltdb "github.com/hashicorp/raft-boltdb"
 	"github.com/pkg/errors"
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/hashicorp/raft"
 )
 
 type ConsensusCfg struct {
-	RPCAddr       string        `env:"RPC_ADDR" envDefault:"localhost:10001"`
-	RaftAddr      string        `env:"RAFT_ADDR" envDefault:"localhost:8081"`
-	BindAddr      string        `env:"BIND_ADDR" envDefault:"localhost:8082"`
-	AdvertiseAddr string        `env:"ADVERT_ADDR" envDefault:"localhost:8083"`
-	MaxPool       int           `env:"MAX_POOL" envDefault:"5"`
-	Timeout       time.Duration `env:"TIMEOUT" envDefault:"10s"`
-	LogStoreDir   string        `env:"RAFT_LOG_STORE_DIR" envDefault:"persist"`
-	DataStoreDir  string        `env:"RAFT_DATA_STORE_DIR" envDefault:"persist"`
-	Bootstrap     bool          `env:"RAFT_BOOTSTRAP" envDefault:"true"`
+	RPCAddr      string        `env:"RPC_ADDR" envDefault:"localhost:10001"`
+	RaftAddr     string        `env:"RAFT_ADDR" envDefault:"localhost:8081"`
+	MaxPool      int           `env:"MAX_POOL" envDefault:"5"`
+	Timeout      time.Duration `env:"TIMEOUT" envDefault:"10s"`
+	LogStoreDir  string        `env:"RAFT_LOG_STORE_DIR" envDefault:"persist"`
+	DataStoreDir string        `env:"RAFT_DATA_STORE_DIR" envDefault:"persist"`
+	Bootstrap    bool          `env:"RAFT_BOOTSTRAP"`
+	Follower     bool          `env:"RAFT_FOLLOWER" envDefault:"true"`
 }
 
 type Consensus struct {
@@ -66,11 +67,11 @@ func NewConsensus(cfg ConsensusCfg, fsm raft.FSM) (*Consensus, error) {
 }
 
 func (c *Consensus) setupTransport() error {
-	addr, err := net.ResolveTCPAddr("tcp", c.cfg.AdvertiseAddr)
+	addr, err := net.ResolveTCPAddr("tcp", c.cfg.RaftAddr)
 	if err != nil {
 		return errors.Wrap(err, "ResolveTCPAddr")
 	}
-	c.transport, err = raft.NewTCPTransportWithConfig(c.cfg.BindAddr, addr, &raft.NetworkTransportConfig{
+	c.transport, err = raft.NewTCPTransportWithConfig(c.cfg.RaftAddr, addr, &raft.NetworkTransportConfig{
 		Timeout: c.cfg.Timeout,
 	})
 	if err != nil {
@@ -144,6 +145,7 @@ func (c *Consensus) WaitForLeader(ctx context.Context) (string, error) {
 		if leaderAddr != "" && id != "" {
 			return string(leaderAddr), nil
 		}
+		fmt.Println("WAIT .... leader ")
 		timer.Reset(leaderWaitPeriod)
 	}
 }
@@ -173,16 +175,57 @@ func (c *Consensus) Close() error {
 	return nil
 }
 
-func (c *Consensus) bootstrapCluster() (err error) {
-	if !c.cfg.Bootstrap {
-		return err
+func await[T interface {
+	Error() error
+}](future ...T) error {
+	var errsC = make(chan error)
+
+	wg := sync.WaitGroup{}
+	wg.Add(len(future))
+
+	go func() {
+		defer close(errsC)
+		wg.Wait()
+	}()
+	for i := range future {
+		go func(i int) {
+			defer wg.Done()
+			errsC <- future[i].Error()
+		}(i)
 	}
-	config := raft.Configuration{
-		Servers: []raft.Server{{
-			ID:      raft.ServerID(c.cfg.RaftAddr),
-			Address: c.transport.LocalAddr(),
-		}},
+	var err error
+	for _err := range errsC {
+		err = errs.Join(err, _err)
 	}
 
-	return c.Raft.BootstrapCluster(config).Error()
+	return err
+}
+
+func (c *Consensus) bootstrapCluster() (err error) {
+	id := raft.ServerID(c.cfg.RaftAddr)
+	if c.cfg.Follower {
+		return nil
+	}
+	if !c.cfg.Bootstrap {
+		return errors.Wrap(await(c.Raft.AddVoter(
+			id,
+			c.transport.LocalAddr(),
+			c.LastIndex(),
+			c.cfg.Timeout,
+		)), "AddNonvoter")
+	}
+
+	cfg, err := raft.ReadPeersJSON("./peers.json")
+	if err != nil {
+		return err
+	}
+
+	cfg.Servers = append(cfg.Servers, raft.Server{
+		ID:      id,
+		Address: c.transport.LocalAddr(),
+	})
+
+	err = c.Raft.BootstrapCluster(cfg).Error()
+
+	return errors.Wrap(err, "BootstrapCluster,AddVoter")
 }

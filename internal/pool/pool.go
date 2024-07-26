@@ -1,6 +1,7 @@
 package pool
 
 import (
+	"cmp"
 	"context"
 	errs "errors"
 	"fmt"
@@ -43,10 +44,11 @@ const (
 
 func NewTxPool(ctx context.Context, store Store[*domain.Transaction], capacity int64) *TxPool {
 	p := &TxPool{
-		buffer:              ring.NewRingQueue[*domain.Transaction](capacity),
+		buffer:              ring.NewRingQueue[*domain.Transaction](cmp.Or(capacity, defaultButchSize*10)),
 		store:               store,
 		butchSize:           defaultButchSize,
 		bufferFlushInterval: 5 * time.Second,
+		forceFlushBuffer:    make(chan struct{}, 1),
 	}
 	go p.run(ctx)
 
@@ -65,7 +67,7 @@ func (p *TxPool) flushBuffer(ctx context.Context) error {
 	if len(txx) == 0 {
 		return nil
 	}
-
+	fmt.Println("STORE INSERT", txx)
 	return p.store.Insert(ctx, txx...)
 }
 
@@ -73,26 +75,29 @@ var ErrClosed = errs.New("pool closed")
 var ErrAlreadyClosed = errs.New("pool already closed")
 
 func (p *TxPool) run(ctx context.Context) {
-	timer := time.NewTimer(p.bufferFlushInterval)
-	defer timer.Stop()
+	flushTimer := time.NewTicker(p.bufferFlushInterval)
+	defer flushTimer.Stop()
+
+	heartbeat := time.NewTicker(time.Minute)
+	defer heartbeat.Stop()
 
 	var err error
 	for {
-		if p.isClosed() {
-			return
-		}
 		select {
+		case now := <-heartbeat.C:
+			p.logger.Error("POOL ALIVE", "now", now.String())
 		case <-ctx.Done():
+
 		case <-channel.SelectN(p.forceFlushBuffer, p.quit):
-		case <-timer.C:
+		case <-flushTimer.C:
 		}
 		if err = errs.Join(p.flushBuffer(ctx), ctx.Err(), err); err != nil {
-			p.logger.Error("forceFlushBuffer", "err", err)
 			if ctx.Err() != nil {
+				p.logger.Error("CTX ERROR", "err", ctx.Err())
+
 				return
 			}
-
-			continue
+			p.logger.Error("forceFlushBuffer", "err", err)
 		}
 	}
 }
@@ -110,6 +115,7 @@ func (p *TxPool) Sync() {
 	select {
 	case p.forceFlushBuffer <- struct{}{}:
 	default:
+		fmt.Println("forceFlushBuffer FULL")
 	}
 }
 

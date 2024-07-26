@@ -1,10 +1,10 @@
 package domain
 
 type Transaction struct {
-	ID        string
-	Index     int
-	Timestamp int64
-	Encoding  int
-	Data      []byte
-	Action    string
+	ID        string `json:"id"`
+	Index     int    `json:"index"`
+	Timestamp int64  `json:"timestamp"`
+	Encoding  int    `json:"encoding"`
+	Data      string `json:"data"`
+	Action    string `json:"action"`
 }
